@@ -22,6 +22,10 @@ This MCP server provides tools to query Red Hat's CSAF/VEX documents to answer s
 - **Package Status Checking**: Check if packages are affected by specific CVEs
 - **Package Fix Status**: Check if packages are fixed by specific RHSAs
 - **Affected Package Listing**: List all packages affected by a CVE or RHSA
+- **Product Identifier Resolution**: Resolve VEX/RHSA product identifiers to underlying CPE and PURL identifiers
+- **Package Vulnerability Status**: Get comprehensive vulnerability status for specific packages across all categories
+- **Pagination**: Handle large result sets with configurable pagination (default: 50 items, max: 500)
+- **Automatic Citations**: All responses include VEX/RHSA source citations with URLs
 - **Caching**: Built-in caching to improve performance and reduce API calls
 
 ## Data Sources
@@ -89,12 +93,16 @@ Check if a specific package is affected by a CVE.
 **Parameters:**
 - `cve` (required): The CVE ID to check
 - `package` (required): The package name to check if affected
+- `limit` (optional): Maximum number of matching products to return (default: 50, max: 500)
+- `offset` (optional): Number of matching products to skip (default: 0)
 
 **Example:**
 ```json
 {
   "cve": "CVE-2024-1234",
-  "package": "kernel"
+  "package": "kernel",
+  "limit": 20,
+  "offset": 0
 }
 ```
 
@@ -104,12 +112,16 @@ Check if a specific package is fixed by an RHSA.
 **Parameters:**
 - `rhsa` (required): The RHSA ID to check
 - `package` (required): The package name to check if fixed
+- `limit` (optional): Maximum number of matching products to return (default: 50, max: 500)
+- `offset` (optional): Number of matching products to skip (default: 0)
 
 **Example:**
 ```json
 {
   "rhsa": "RHSA-2024:1234",
-  "package": "kernel"
+  "package": "kernel",
+  "limit": 20,
+  "offset": 0
 }
 ```
 
@@ -118,11 +130,67 @@ List all packages affected by a CVE or RHSA.
 
 **Parameters:**
 - `id` (required): The CVE or RHSA ID to list affected packages for
+- `limit` (optional): Maximum number of packages to return per status category (default: 50, max: 500)
+- `offset` (optional): Number of packages to skip per status category (default: 0)
 
 **Example:**
 ```json
 {
-  "id": "CVE-2024-1234"
+  "id": "CVE-2024-1234",
+  "limit": 25,
+  "offset": 0
+}
+```
+
+#### 6. `resolve_product_identifiers`
+Resolve VEX/RHSA product identifiers to their underlying CPE and PURL identifiers.
+
+**Parameters:**
+- `id` (required): The CVE or RHSA ID to resolve products for
+- `product_ids` (optional): List of specific product IDs to resolve (if empty, resolves all not-affected products)
+
+**Example:**
+```json
+{
+  "id": "CVE-2024-7348",
+  "product_ids": ["red_hat_enterprise_linux_10:postgresql", "red_hat_enterprise_linux_10:postgresql-server"]
+}
+```
+
+**Example - Resolve all not-affected products:**
+```json
+{
+  "id": "CVE-2024-7348"
+}
+```
+
+### 7. `get_package_vulnerability_status`
+
+Get comprehensive vulnerability status for a specific package across all categories (vulnerable, fixed, not_affected, etc.).
+
+**Parameters:**
+- `id` (required): CVE or RHSA ID
+- `package` (required): Package name to filter by
+- `limit` (optional): Maximum packages per status category (default: 50, max: 500)
+- `offset` (optional): Number of packages to skip per category (default: 0)
+
+**Examples:**
+
+**Check PostgreSQL status for a CVE:**
+```json
+{
+  "id": "CVE-2024-7348",
+  "package": "postgresql"
+}
+```
+
+**Check with pagination:**
+```json
+{
+  "id": "CVE-2024-7348", 
+  "package": "postgresql",
+  "limit": 25,
+  "offset": 0
 }
 ```
 

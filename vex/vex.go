@@ -1,10 +1,12 @@
 package vex
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,22 +20,69 @@ type VEXClient struct {
 	Client      *http.Client
 }
 
-// NewVEXClient creates a new VEX client
+// NewVEXClient creates a new VEX client with improved HTTP configuration
 func NewVEXClient() *VEXClient {
 	return &VEXClient{
 		VEXBaseURL:  "https://access.redhat.com/security/data/csaf/v2/vex",
 		CSAFBaseURL: "https://security.access.redhat.com/data/csaf/v2/advisories",
 		Client: &http.Client{
 			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 5,
+				IdleConnTimeout:     60 * time.Second,
+				DisableKeepAlives:   false,
+			},
 		},
 	}
 }
 
-// GetVEXDocument retrieves a VEX document for a specific CVE
+// validateCVEYear validates the year component of a CVE ID
+func validateCVEYear(year string) error {
+	if len(year) != 4 {
+		return fmt.Errorf("CVE year must be 4 digits, got %d", len(year))
+	}
+
+	yearInt, err := strconv.Atoi(year)
+	if err != nil {
+		return fmt.Errorf("CVE year must be numeric: %s", year)
+	}
+
+	if yearInt < 1999 || yearInt > time.Now().Year()+1 {
+		return fmt.Errorf("CVE year %d outside valid range (1999-%d)", yearInt, time.Now().Year()+1)
+	}
+
+	return nil
+}
+
+// validateRHSAYear validates the year component of an RHSA ID
+func validateRHSAYear(year string) error {
+	if len(year) != 4 {
+		return fmt.Errorf("RHSA year must be 4 digits, got %d", len(year))
+	}
+
+	yearInt, err := strconv.Atoi(year)
+	if err != nil {
+		return fmt.Errorf("RHSA year must be numeric: %s", year)
+	}
+
+	if yearInt < 2000 || yearInt > time.Now().Year()+1 {
+		return fmt.Errorf("RHSA year %d outside valid range (2000-%d)", yearInt, time.Now().Year()+1)
+	}
+
+	return nil
+}
+
+// GetVEXDocument retrieves a VEX document for a specific CVE with context support
 func (c *VEXClient) GetVEXDocument(cveID string) (*csaf.CSAF, error) {
+	return c.GetVEXDocumentWithContext(context.Background(), cveID)
+}
+
+// GetVEXDocumentWithContext retrieves a VEX document for a specific CVE with context support
+func (c *VEXClient) GetVEXDocumentWithContext(ctx context.Context, cveID string) (*csaf.CSAF, error) {
 	// Validate CVE ID format
 	if !strings.HasPrefix(strings.ToUpper(cveID), "CVE-") {
-		return nil, fmt.Errorf("invalid CVE ID format: %s", cveID)
+		return nil, fmt.Errorf("invalid CVE ID format: %s (must start with CVE-)", cveID)
 	}
 
 	// Normalize CVE ID to uppercase
@@ -42,25 +91,35 @@ func (c *VEXClient) GetVEXDocument(cveID string) (*csaf.CSAF, error) {
 	// Extract year from CVE ID for URL construction
 	parts := strings.Split(cveID, "-")
 	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
-		return nil, fmt.Errorf("invalid CVE ID format: %s", cveID)
+		return nil, fmt.Errorf("invalid CVE ID format: %s (must be CVE-YYYY-NNNN)", cveID)
 	}
 	year := parts[1]
+	sequence := parts[2]
 
-	// Validate year is numeric and reasonable
-	if len(year) != 4 {
-		return nil, fmt.Errorf("invalid CVE ID format: %s", cveID)
+	// Validate year
+	if err := validateCVEYear(year); err != nil {
+		return nil, fmt.Errorf("invalid CVE ID: %w", err)
 	}
 
-	// Validate sequence number is not empty
-	if parts[2] == "" {
-		return nil, fmt.Errorf("invalid CVE ID format: %s", cveID)
+	// Validate sequence number is not empty and is numeric
+	if sequence == "" {
+		return nil, fmt.Errorf("invalid CVE ID format: %s (sequence number cannot be empty)", cveID)
+	}
+	if _, err := strconv.Atoi(sequence); err != nil {
+		return nil, fmt.Errorf("invalid CVE ID format: %s (sequence number must be numeric)", cveID)
 	}
 
 	// Construct URL: https://access.redhat.com/security/data/csaf/v2/vex/2024/cve-2024-1234.json
 	url := fmt.Sprintf("%s/%s/%s.json", c.VEXBaseURL, year, strings.ToLower(cveID))
 
+	// Create request with context
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
 	// Make HTTP request
-	resp, err := c.Client.Get(url)
+	resp, err := c.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch VEX document: %w", err)
 	}
@@ -88,11 +147,16 @@ func (c *VEXClient) GetVEXDocument(cveID string) (*csaf.CSAF, error) {
 	return &csafDoc, nil
 }
 
-// GetRHSADocument retrieves a CSAF document for a specific RHSA
+// GetRHSADocument retrieves a CSAF document for a specific RHSA with context support
 func (c *VEXClient) GetRHSADocument(rhsaID string) (*csaf.CSAF, error) {
+	return c.GetRHSADocumentWithContext(context.Background(), rhsaID)
+}
+
+// GetRHSADocumentWithContext retrieves a CSAF document for a specific RHSA with context support
+func (c *VEXClient) GetRHSADocumentWithContext(ctx context.Context, rhsaID string) (*csaf.CSAF, error) {
 	// Validate RHSA ID format (e.g., RHSA-2024:1234)
 	if !strings.HasPrefix(strings.ToUpper(rhsaID), "RHSA-") {
-		return nil, fmt.Errorf("invalid RHSA ID format: %s", rhsaID)
+		return nil, fmt.Errorf("invalid RHSA ID format: %s (must start with RHSA-)", rhsaID)
 	}
 
 	// Normalize RHSA ID to uppercase
@@ -101,19 +165,25 @@ func (c *VEXClient) GetRHSADocument(rhsaID string) (*csaf.CSAF, error) {
 	// Extract year from RHSA ID for URL construction
 	parts := strings.Split(rhsaID, "-")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid RHSA ID format: %s", rhsaID)
+		return nil, fmt.Errorf("invalid RHSA ID format: %s (must be RHSA-YYYY:NNNN)", rhsaID)
 	}
 
 	// Split the second part by colon to get year and number
 	yearAndNum := strings.Split(parts[1], ":")
 	if len(yearAndNum) != 2 || yearAndNum[0] == "" || yearAndNum[1] == "" {
-		return nil, fmt.Errorf("invalid RHSA ID format: %s", rhsaID)
+		return nil, fmt.Errorf("invalid RHSA ID format: %s (must be RHSA-YYYY:NNNN)", rhsaID)
 	}
 	year := yearAndNum[0]
+	sequence := yearAndNum[1]
 
-	// Validate year is numeric and reasonable
-	if len(year) != 4 {
-		return nil, fmt.Errorf("invalid RHSA ID format: %s", rhsaID)
+	// Validate year
+	if err := validateRHSAYear(year); err != nil {
+		return nil, fmt.Errorf("invalid RHSA ID: %w", err)
+	}
+
+	// Validate sequence number is numeric
+	if _, err := strconv.Atoi(sequence); err != nil {
+		return nil, fmt.Errorf("invalid RHSA ID format: %s (sequence number must be numeric)", rhsaID)
 	}
 
 	// Construct URL: https://security.access.redhat.com/data/csaf/v2/advisories/2024/rhsa-2024_1234.json
@@ -121,8 +191,14 @@ func (c *VEXClient) GetRHSADocument(rhsaID string) (*csaf.CSAF, error) {
 	fileName := strings.ToLower(strings.Replace(rhsaID, ":", "_", -1))
 	url := fmt.Sprintf("%s/%s/%s.json", c.CSAFBaseURL, year, fileName)
 
+	// Create request with context
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
 	// Make HTTP request
-	resp, err := c.Client.Get(url)
+	resp, err := c.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch RHSA document: %w", err)
 	}
@@ -234,8 +310,8 @@ func IsPackageFixedByRHSA(doc *csaf.CSAF, packageName string) (bool, string, []s
 	return false, "Package not found in RHSA document", []string{}
 }
 
-// GetAffectedPackagesByDocument returns all packages affected by this CSAF document
-func GetAffectedPackagesByDocument(doc *csaf.CSAF) map[string][]string {
+// GetPackagesByDocument returns all packages affected by this CSAF document
+func GetPackagesByDocument(doc *csaf.CSAF) map[string][]string {
 	result := make(map[string][]string)
 
 	for _, vuln := range doc.Vulnerabilities {
@@ -259,8 +335,8 @@ func GetAffectedPackagesByDocument(doc *csaf.CSAF) map[string][]string {
 	return result
 }
 
-// GetVulnerabilityStatus returns a summary of the vulnerability status
-func GetVulnerabilityStatus(doc *csaf.CSAF) map[string]int {
+// GetVulnerabilityStats returns a summary of the vulnerability status
+func GetVulnerabilityStats(doc *csaf.CSAF) map[string]int {
 	status := make(map[string]int)
 
 	for _, vuln := range doc.Vulnerabilities {
@@ -312,7 +388,7 @@ func GetSeverity(doc *csaf.CSAF) string {
 
 // FormatSummary returns a human-readable summary of the CSAF document
 func FormatSummary(doc *csaf.CSAF) string {
-	status := GetVulnerabilityStatus(doc)
+	status := GetVulnerabilityStats(doc)
 	severity := GetSeverity(doc)
 
 	summary := fmt.Sprintf("Document: %s\n", doc.Document.Tracking.ID)
@@ -346,7 +422,7 @@ func FormatSummary(doc *csaf.CSAF) string {
 
 // FormatRHSASummary returns a human-readable summary of the RHSA CSAF document
 func FormatRHSASummary(doc *csaf.CSAF) string {
-	status := GetVulnerabilityStatus(doc)
+	status := GetVulnerabilityStats(doc)
 	severity := GetSeverity(doc)
 
 	summary := fmt.Sprintf("Document: %s\n", doc.Document.Tracking.ID)
@@ -456,4 +532,237 @@ func GenerateRHSAURL(rhsaID string) string {
 
 	return fmt.Sprintf("https://security.access.redhat.com/data/csaf/v2/advisories/%s/%s.json",
 		year, fileName)
+}
+
+// ProductIdentification represents the identification information for a product
+type ProductIdentification struct {
+	ProductID string `json:"product_id"`
+	Name      string `json:"name"`
+	CPE       string `json:"cpe,omitempty"`
+	PURL      string `json:"purl,omitempty"`
+}
+
+// ProductTreeMapping represents the mapping of products to their identifications
+type ProductTreeMapping struct {
+	Products      map[string]*ProductIdentification `json:"products"`
+	Relationships map[string]*ProductRelationship   `json:"relationships"`
+}
+
+// ProductRelationship represents a relationship between products
+type ProductRelationship struct {
+	ProductID        string                 `json:"product_id"`
+	Name             string                 `json:"name"`
+	Category         string                 `json:"category"`
+	ProductReference string                 `json:"product_reference"`
+	RelatesTo        string                 `json:"relates_to"`
+	BaseProduct      *ProductIdentification `json:"base_product,omitempty"`
+	ComponentProduct *ProductIdentification `json:"component_product,omitempty"`
+}
+
+// ExtractProductTreeMapping extracts all product identification information from a CSAF document
+func ExtractProductTreeMapping(doc *csaf.CSAF) *ProductTreeMapping {
+	mapping := &ProductTreeMapping{
+		Products:      make(map[string]*ProductIdentification),
+		Relationships: make(map[string]*ProductRelationship),
+	}
+
+	// Extract products from branches
+	extractProductsFromBranches(doc.ProductTree.Branches, mapping.Products)
+
+	// Extract relationships
+	extractProductRelationships(doc.ProductTree.Relationships, mapping)
+
+	return mapping
+}
+
+// extractProductsFromBranches recursively extracts products from branches
+func extractProductsFromBranches(branches []csaf.ProductBranch, products map[string]*ProductIdentification) {
+	for _, branch := range branches {
+		// Check if this branch has a product (check if ID is not empty)
+		if branch.Product.ID != "" {
+			product := &ProductIdentification{
+				ProductID: branch.Product.ID,
+				Name:      branch.Product.Name,
+			}
+
+			// Extract CPE/PURL from product identification helper
+			if branch.Product.IdentificationHelper != nil {
+				if cpe, exists := branch.Product.IdentificationHelper["cpe"]; exists {
+					product.CPE = cpe
+				}
+				if purl, exists := branch.Product.IdentificationHelper["purl"]; exists {
+					product.PURL = purl
+				}
+			}
+
+			if product.ProductID != "" {
+				products[product.ProductID] = product
+			}
+		}
+
+		// Recursively process sub-branches
+		extractProductsFromBranches(branch.Branches, products)
+	}
+}
+
+// extractProductRelationships extracts product relationships
+func extractProductRelationships(relationships csaf.Relationships, mapping *ProductTreeMapping) {
+	for _, rel := range relationships {
+		relationship := &ProductRelationship{
+			ProductID:        rel.FullProductName.ID,
+			Name:             rel.FullProductName.Name,
+			Category:         rel.Category,
+			ProductReference: rel.ProductRef,
+			RelatesTo:        rel.RelatesToProductRef,
+		}
+
+		// Resolve component and base products
+		if relationship.ProductReference != "" {
+			relationship.ComponentProduct = mapping.Products[relationship.ProductReference]
+		}
+		if relationship.RelatesTo != "" {
+			relationship.BaseProduct = mapping.Products[relationship.RelatesTo]
+		}
+
+		if relationship.ProductID != "" {
+			mapping.Relationships[relationship.ProductID] = relationship
+		}
+	}
+}
+
+// ResolveProductIdentifiers resolves a list of product IDs to their underlying identifications
+func ResolveProductIdentifiers(doc *csaf.CSAF, productIDs []string) map[string]*ProductResolution {
+	mapping := ExtractProductTreeMapping(doc)
+	resolutions := make(map[string]*ProductResolution)
+
+	for _, productID := range productIDs {
+		resolutions[productID] = ResolveProductIdentifier(mapping, productID)
+	}
+
+	return resolutions
+}
+
+// ProductResolution contains the resolved identification for a product
+type ProductResolution struct {
+	ProductID        string                 `json:"product_id"`
+	Name             string                 `json:"name"`
+	Type             string                 `json:"type"` // "base", "component", "composite"
+	CPE              string                 `json:"cpe,omitempty"`
+	PURL             string                 `json:"purl,omitempty"`
+	BaseProduct      *ProductIdentification `json:"base_product,omitempty"`
+	ComponentProduct *ProductIdentification `json:"component_product,omitempty"`
+	Relationship     *ProductRelationship   `json:"relationship,omitempty"`
+}
+
+// ResolveProductIdentifier resolves a single product ID to its underlying identification
+func ResolveProductIdentifier(mapping *ProductTreeMapping, productID string) *ProductResolution {
+	resolution := &ProductResolution{
+		ProductID: productID,
+	}
+
+	// Check if it's a direct product
+	if product, exists := mapping.Products[productID]; exists {
+		resolution.Name = product.Name
+		resolution.CPE = product.CPE
+		resolution.PURL = product.PURL
+		resolution.Type = "base"
+		if product.PURL != "" {
+			resolution.Type = "component"
+		}
+		return resolution
+	}
+
+	// Check if it's a relationship (composite product)
+	if relationship, exists := mapping.Relationships[productID]; exists {
+		resolution.Name = relationship.Name
+		resolution.Type = "composite"
+		resolution.Relationship = relationship
+		resolution.BaseProduct = relationship.BaseProduct
+		resolution.ComponentProduct = relationship.ComponentProduct
+		return resolution
+	}
+
+	// Unknown product
+	resolution.Type = "unknown"
+	return resolution
+}
+
+// GetProductCPEs returns CPE identifiers for a list of product IDs
+func GetProductCPEs(doc *csaf.CSAF, productIDs []string) []string {
+	resolutions := ResolveProductIdentifiers(doc, productIDs)
+	var cpes []string
+
+	for _, resolution := range resolutions {
+		if resolution.CPE != "" {
+			cpes = append(cpes, resolution.CPE)
+		}
+		if resolution.BaseProduct != nil && resolution.BaseProduct.CPE != "" {
+			cpes = append(cpes, resolution.BaseProduct.CPE)
+		}
+	}
+
+	return cpes
+}
+
+// GetProductPURLs returns PURL identifiers for a list of product IDs
+func GetProductPURLs(doc *csaf.CSAF, productIDs []string) []string {
+	resolutions := ResolveProductIdentifiers(doc, productIDs)
+	var purls []string
+
+	for _, resolution := range resolutions {
+		if resolution.PURL != "" {
+			purls = append(purls, resolution.PURL)
+		}
+		if resolution.ComponentProduct != nil && resolution.ComponentProduct.PURL != "" {
+			purls = append(purls, resolution.ComponentProduct.PURL)
+		}
+	}
+
+	return purls
+}
+
+// FormatProductResolutions formats product resolutions for display
+func FormatProductResolutions(resolutions map[string]*ProductResolution) string {
+	if len(resolutions) == 0 {
+		return "No product resolutions found."
+	}
+
+	result := "🔍 **Product Identity Resolution:**\n\n"
+
+	for productID, resolution := range resolutions {
+		result += fmt.Sprintf("**Product ID**: `%s`\n", productID)
+		result += fmt.Sprintf("**Name**: %s\n", resolution.Name)
+		result += fmt.Sprintf("**Type**: %s\n", resolution.Type)
+
+		if resolution.CPE != "" {
+			result += fmt.Sprintf("**CPE**: `%s`\n", resolution.CPE)
+		}
+		if resolution.PURL != "" {
+			result += fmt.Sprintf("**PURL**: `%s`\n", resolution.PURL)
+		}
+
+		if resolution.Type == "composite" && resolution.Relationship != nil {
+			result += fmt.Sprintf("**Relationship**: %s\n", resolution.Relationship.Category)
+
+			if resolution.BaseProduct != nil {
+				result += fmt.Sprintf("**Base OS**: %s", resolution.BaseProduct.Name)
+				if resolution.BaseProduct.CPE != "" {
+					result += fmt.Sprintf(" (`%s`)", resolution.BaseProduct.CPE)
+				}
+				result += "\n"
+			}
+
+			if resolution.ComponentProduct != nil {
+				result += fmt.Sprintf("**Component**: %s", resolution.ComponentProduct.Name)
+				if resolution.ComponentProduct.PURL != "" {
+					result += fmt.Sprintf(" (`%s`)", resolution.ComponentProduct.PURL)
+				}
+				result += "\n"
+			}
+		}
+
+		result += "\n"
+	}
+
+	return result
 }

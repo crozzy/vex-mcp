@@ -31,23 +31,28 @@ func TestNewVEXClient(t *testing.T) {
 func TestValidateCVEFormat(t *testing.T) {
 	client := NewVEXClient()
 
-	// Test invalid CVE formats
-	invalidCVEs := []string{
-		"invalid",
-		"CVE-",
-		"CVE-2024",
-		"CVE-2024-",
-		"2024-1234",
-		"",
+	// Test cases with expected error substrings
+	testCases := []struct {
+		cveID       string
+		errorSubstr string
+	}{
+		{"invalid", "invalid CVE ID format"},
+		{"CVE-", "invalid CVE ID format"},
+		{"CVE-2024", "invalid CVE ID format"},
+		{"CVE-2024-", "invalid CVE ID format"}, // This gets caught by the basic format check first
+		{"2024-1234", "invalid CVE ID format"},
+		{"", "invalid CVE ID format"},
+		{"CVE-24-1234", "CVE year must be 4 digits"},        // More specific error for improved validation
+		{"CVE-2024-abc", "sequence number must be numeric"}, // Test non-numeric sequence
 	}
 
-	for _, cveID := range invalidCVEs {
-		_, err := client.GetVEXDocument(cveID)
+	for _, tc := range testCases {
+		_, err := client.GetVEXDocument(tc.cveID)
 		if err == nil {
-			t.Errorf("Expected error for invalid CVE ID '%s', but got none", cveID)
+			t.Errorf("Expected error for invalid CVE ID '%s', but got none", tc.cveID)
 		}
-		if !strings.Contains(err.Error(), "invalid CVE ID format") {
-			t.Errorf("Expected 'invalid CVE ID format' error for '%s', got '%s'", cveID, err.Error())
+		if !strings.Contains(err.Error(), tc.errorSubstr) {
+			t.Errorf("Expected '%s' error for '%s', got '%s'", tc.errorSubstr, tc.cveID, err.Error())
 		}
 	}
 }
@@ -82,24 +87,27 @@ func TestCVEIDNormalization(t *testing.T) {
 func TestRHSAValidation(t *testing.T) {
 	client := NewVEXClient()
 
-	// Test invalid RHSA formats
-	invalidRHSAs := []string{
-		"invalid",
-		"RHSA-",
-		"RHSA-2024",
-		"RHSA-2024:",
-		"2024:1234",
-		"",
-		"RHSA-24:1234", // Year too short
+	// Test cases with expected error substrings
+	testCases := []struct {
+		rhsaID      string
+		errorSubstr string
+	}{
+		{"invalid", "invalid RHSA ID format"},
+		{"RHSA-", "invalid RHSA ID format"},
+		{"RHSA-2024", "invalid RHSA ID format"},
+		{"RHSA-2024:", "invalid RHSA ID format"},
+		{"2024:1234", "invalid RHSA ID format"},
+		{"", "invalid RHSA ID format"},
+		{"RHSA-24:1234", "RHSA year must be 4 digits"}, // More specific error for improved validation
 	}
 
-	for _, rhsaID := range invalidRHSAs {
-		_, err := client.GetRHSADocument(rhsaID)
+	for _, tc := range testCases {
+		_, err := client.GetRHSADocument(tc.rhsaID)
 		if err == nil {
-			t.Errorf("Expected error for invalid RHSA ID '%s', but got none", rhsaID)
+			t.Errorf("Expected error for invalid RHSA ID '%s', but got none", tc.rhsaID)
 		}
-		if !strings.Contains(err.Error(), "invalid RHSA ID format") {
-			t.Errorf("Expected 'invalid RHSA ID format' error for '%s', got '%s'", rhsaID, err.Error())
+		if !strings.Contains(err.Error(), tc.errorSubstr) {
+			t.Errorf("Expected '%s' error for '%s', got '%s'", tc.errorSubstr, tc.rhsaID, err.Error())
 		}
 	}
 }
@@ -126,8 +134,8 @@ func TestVEXDocumentMethods(t *testing.T) {
 		},
 	}
 
-	// Test GetVulnerabilityStatus
-	status := GetVulnerabilityStatus(csafDoc)
+	// Test GetVulnerabilityStats
+	status := GetVulnerabilityStats(csafDoc)
 	expected := map[string]int{
 		"fixed":               2,
 		"known_affected":      1,
@@ -244,8 +252,8 @@ func TestPackageAffectedMethods(t *testing.T) {
 		}
 	}
 
-	// Test GetAffectedPackagesByDocument
-	affectedPackages := GetAffectedPackagesByDocument(csafDoc)
+	// Test GetPackagesByDocument
+	affectedPackages := GetPackagesByDocument(csafDoc)
 
 	expectedCounts := map[string]int{
 		"affected":            1, // package3-affected
@@ -256,7 +264,7 @@ func TestPackageAffectedMethods(t *testing.T) {
 
 	for status, expectedCount := range expectedCounts {
 		if len(affectedPackages[status]) != expectedCount {
-			t.Errorf("GetAffectedPackagesByDocument(): expected %d %s packages, got %d", expectedCount, status, len(affectedPackages[status]))
+			t.Errorf("GetPackagesByDocument(): expected %d %s packages, got %d", expectedCount, status, len(affectedPackages[status]))
 		}
 	}
 }
